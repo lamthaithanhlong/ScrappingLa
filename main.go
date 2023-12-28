@@ -23,6 +23,8 @@ type pageInfo struct {
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
+	baseURL := "http://localhost:7171/?url="
+	ImageURL := "http://localhost:7171/image"
 	URL := r.URL.Query().Get("url")
 	if URL == "" {
 		log.Println("missing URL argument")
@@ -38,7 +40,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	c.OnHTML("a[href]", func(e *colly.HTMLElement) {
 		link := e.Request.AbsoluteURL(e.Attr("href"))
 		if link != "" {
-			p.Links[link]++
+			p.Links[baseURL+link]++
 		}
 	})
 	// extract image
@@ -60,7 +62,6 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			}
 			// Encode the image bytes
 			encodedImage := base64.StdEncoding.EncodeToString(imgBytes)
-
 			// Lock the mutex while updating imageData to ensure safe concurrent access
 			imageDataMutex.Lock()
 			imageData = encodedImage
@@ -85,7 +86,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	defer imageDataMutex.Unlock()
 
 	// Include the base64-encoded image in the JSON response
-	p.Image = imageData
+	p.Image = ImageURL
 
 	// dump results
 	b, err := json.Marshal(p)
