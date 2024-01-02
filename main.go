@@ -1,19 +1,22 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"github.com/gocolly/colly"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"strings"
-	"sync" // Import sync package for safe concurrent access to imageData
+	"sync"
 )
 
 var (
 	imageDataMutex sync.Mutex // Mutex for safe concurrent access to imageData
-	imageData      string     // Global variable for storing image data
+	imageData      []byte     // Global variable for storing compressed image data
 )
 
 type pageInfo struct {
@@ -23,27 +26,29 @@ type pageInfo struct {
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	baseURL := "http://localhost:7171/?url="
 	ImageURL := "http://localhost:7171/image"
+
 	URL := r.URL.Query().Get("url")
 	if URL == "" {
 		log.Println("missing URL argument")
 		return
 	}
+
 	log.Println("visiting", URL)
 
 	c := colly.NewCollector()
 
 	p := &pageInfo{Links: make(map[string]int)}
 
-	// count links
 	c.OnHTML("a[href]", func(e *colly.HTMLElement) {
 		link := e.Request.AbsoluteURL(e.Attr("href"))
 		if link != "" {
 			p.Links[baseURL+link]++
 		}
 	})
-	// extract image
+
 	c.OnHTML("img[src]", func(e *colly.HTMLElement) {
 		imageLink := e.Request.AbsoluteURL(e.Attr("src"))
 		response, err := http.Get(imageLink)
@@ -51,24 +56,32 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			log.Println("error:", err)
 			return
 		}
+
 		defer response.Body.Close()
 
-		// Check for JPEG images and encode:
 		if strings.Contains(imageLink, ".jpg") {
-			imgBytes, err := ioutil.ReadAll(response.Body) // Read the image content
+			imgBytes, err := ioutil.ReadAll(response.Body)
 			if err != nil {
 				log.Println("error reading image:", err)
 				return
 			}
-			// Encode the image bytes
+
 			encodedImage := base64.StdEncoding.EncodeToString(imgBytes)
-			// Lock the mutex while updating imageData to ensure safe concurrent access
+
+			// Compress the base64-encoded image data with gzip
+			compressedImage, compressedSize, err := compressWithGzip([]byte(encodedImage))
+			fmt.Printf("Compressed Data Length: %d character\n", compressedSize)
+			if err != nil {
+				log.Println("error compressing image:", err)
+				return
+			}
+
 			imageDataMutex.Lock()
-			imageData = encodedImage
+			imageData = compressedImage
 			imageDataMutex.Unlock()
 		}
 	})
-	// extract status code
+
 	c.OnResponse(func(r *colly.Response) {
 		log.Println("response received", r.StatusCode)
 		p.StatusCode = r.StatusCode
@@ -81,14 +94,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	c.Visit(URL)
 
-	// Lock the mutex while accessing imageData to ensure safe concurrent access
 	imageDataMutex.Lock()
 	defer imageDataMutex.Unlock()
 
-	// Include the base64-encoded image in the JSON response
 	p.Image = ImageURL
 
-	// dump results
 	b, err := json.Marshal(p)
 	if err != nil {
 		log.Println("failed to serialize response:", err)
@@ -100,31 +110,76 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func imageHandler(w http.ResponseWriter, r *http.Request) {
-	// Lock the mutex while accessing imageData to ensure safe concurrent access
 	imageDataMutex.Lock()
 	defer imageDataMutex.Unlock()
 
-	if imageData != "" {
+	if len(imageData) > 0 {
+		// Decompress the compressed base64-encoded image data with gzip
+		decompressedData, decompressedSize, err := decompressWithGzip(imageData)
+		if err != nil {
+			http.Error(w, "Error decompressing image data", http.StatusInternalServerError)
+			return
+		}
+		// Print the size of decompressed data
+		fmt.Printf("Decompressed Data Length: %d character\n", decompressedSize)
+
 		// Decode the base64-encoded image data
-		decodedImage, err := base64.StdEncoding.DecodeString(imageData)
+		decodedImage, err := base64.StdEncoding.DecodeString(string(decompressedData))
 		if err != nil {
 			http.Error(w, "Error decoding image data", http.StatusInternalServerError)
 			return
 		}
 
-		// Set the Content-Type header to indicate that you're sending an image
-		w.Header().Set("Content-Type", "image/jpeg") // Change this to the appropriate content type if it's not JPEG
-
-		// Write the decoded image data to the response writer
+		w.Header().Set("Content-Type", "image/jpeg")
 		_, err = w.Write(decodedImage)
 		if err != nil {
 			http.Error(w, "Error writing image data to response", http.StatusInternalServerError)
 			return
 		}
 	} else {
-		// Handle the case where no image data is available
 		http.Error(w, "No image data available", http.StatusNotFound)
 	}
+}
+
+func compressWithGzip(data []byte) ([]byte, int, error) {
+	var compressedData bytes.Buffer
+	writer, gzipErr := gzip.NewWriterLevel(&compressedData, gzip.BestCompression)
+	if gzipErr != nil {
+		return nil, 0, gzipErr
+	}
+
+	_, err := writer.Write(data)
+	if err != nil {
+		writer.Close()
+		return nil, 0, err
+	}
+
+	err = writer.Close()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Calculate the size of compressed data
+	compressedSize := compressedData.Len()
+
+	return compressedData.Bytes(), compressedSize, nil
+}
+
+func decompressWithGzip(data []byte) ([]byte, int, error) {
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, 0, err
+	}
+	defer reader.Close()
+
+	decompressedData, err := ioutil.ReadAll(reader)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	decompressedSize := len(decompressedData)
+
+	return decompressedData, decompressedSize, nil
 }
 
 func main() {
