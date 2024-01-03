@@ -14,6 +14,9 @@ import (
 	"sync"
 )
 
+var baseURL = "http://localhost:7171/?url="
+var ImageURL = "http://localhost:7171/image"
+
 var (
 	imageDataMutex sync.Mutex // Mutex for safe concurrent access to imageData
 	imageData      []byte     // Global variable for storing compressed image data
@@ -27,8 +30,6 @@ type pageInfo struct {
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	var err error
-	baseURL := "http://localhost:7171/?url="
-	ImageURL := "http://localhost:7171/image"
 
 	URL := r.URL.Query().Get("url")
 	if URL == "" {
