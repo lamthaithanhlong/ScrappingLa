@@ -112,7 +112,6 @@ func setupLogging() (*os.File, error) {
 			return nil, err
 		}
 	}
-
 	return os.OpenFile(filepath.Join(downloadPath, logFileName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 }
 
